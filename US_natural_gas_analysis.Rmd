@@ -1,0 +1,154 @@
+---
+title: "Natural gas consumption forecast"
+output: 
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(forecast)
+library(TSstudio)
+```
+
+## Introduction
+
+In this project, I will be investigating and forecasting electricity consumption in the UK. I will be comparing two different, both very popular forecasting methodologies: Holt-Winters exponential smoothing and ARIMA models. I will be comparing and evaluating both methodologies against the naive model which simply forecasts each observation to be equal to the previous one (Y_t = Y_t-1). I will be using four different performance metrics:
+
+## Performance metrics
+1.) Mean Squared error (MSE): MSE simply takes the difference between the forecasted value Yhat and the actual value Y, squares it for each observation and then takes the average over all observations. The reason for this is so that negative and positive values don't cancel each other out. Additionally, this also penalises predictions that are very far off more than ones that are only slighty wrong. 
+2.) Mean Absolute error (MAE): MAE also computes the difference between forecasted value and actual value, but instead of squaring it simply takes the absolute value of the difference. It then computes the average among all the differences. This method is preferable if we want all errors to be weighted equally, and don't want errors that are further off to be penalised higher.
+
+3.) Root Mean Squared Error (RMSE): RMSE is simply the square root of the MSE. The reason for this is so the error is on the same scale as the original data, giving better insight into how the error term compares to the data.
+
+4.) Mean Absolute Percentage Error (MAPE): MAPE is the average ratio between the absolute error and the absolute value of the actual value (Y).
+
+## Reading in the data
+Let's take a look at the data:
+```{r}
+data(USgas)
+ts_info(USgas)
+```
+
+```{r}
+ts_plot(USgas, Xtitle = "Year", 
+        Ytitle = "Natural gas consumption in Million cubic feet",
+        title = "Monthly US Natural gas consumption")
+```
+Looks like there is quite a strong seasonal component in the data, which makes sense as a lot of heating is powered using natural gas so there would naturally be more demand for gas during the winter months compared to the summer months. We can also see a slightly increasing trend from about 2010 onwards. Let's take a look at a decomposition of the time series and see if this confirms these first visual impressions:
+```{r}
+decompose(USgas) %>% plot()
+```
+Decomposition reveals a trend as well, beginning around 2005 but becoming more pronounced from about 2010 onwards. I'll be splitting the data into training and test set, the test set will be the last 12 months of the data. I'll start off by fitting a naive model, which simply uses the average of all preceding observations. This will be a good benchmark to compare the performance of more complex models to.
+
+```{r}
+USgas_par <- ts_split(USgas, 12)
+train <- USgas_par$train
+test <- USgas_par$test
+naive_mod <- naive(train,h=12)
+```
+
+## Fitting a naive model
+
+```{r}
+fc_naive <- forecast(naive_mod,h=12)
+accuracy(fc_naive, test)
+```
+
+```{r}
+test_forecast(actual = USgas,
+forecast.obj = fc_naive,
+test = test)
+```
+As we can see, the naive model simply takes the average of all previous observations without any considerations of seasonal or trend data. Let's fit a Holt Winters exponential smoothing model instead and see how well this captures the data and whether we get an improvement over the naive model:
+
+## Fitting a Holt Winters exponential smoothing model
+
+```{r}
+hw_mod <- HoltWinters(train)
+hw_mod
+```
+We can see that the model takes into account the average level of the preceding observations (alpha = 0.37) as well as a strong seasonal component (gamma = 0.44). It does not, however, take into account a trend (beta = 0).
+```{r}
+fc_hw <- forecast(hw_mod, h = 12)
+accuracy(fc_hw, test)
+```
+This is a significant improvement over the naive model, with RMSE reducing by more than 75% from 500 to only 115. We can see a similar reduction when looking at MAPE and MAE.
+```{r}
+test_forecast(actual = USgas,
+forecast.obj = fc_hw,
+test = test)
+```
+Looking visually at our predictions, this confirms what the error metrics tell us. The model beautifully captures the seasonal patterns. 
+
+## Fitting an ARIMA model
+
+Let's see how a different class of models, the ARIMA model, performs for this dataset. Arima models rely on a combination of two modelling techniques, the AR and MA processes. The AR process basically explains a model's future values as a linear combination of it's previous values, or lags. It requires the time series to be stationary, meaning it can have an increasing or decreasing trend or variance. 
+Lots of time series are not stationary however, be it due to trends, varying seasonal patterns or a certain number of random events. Fortunately, there is a way to deal with these time series as well using a technique called differencing. This mean subtracting the value from one cycle prior (so for example in a daily series, Yt = Yt - Yt-365). After doing this, we simply analyse the difference between these two time points. Forecasts made on these differences easily can be converted back to an actual time series.
+
+Due to the strong seasonality in the data, a SARIMA model, which has three additional parameters to capture seasonality, will likely be the most appropriate. To get a better understanding of the serial correlation of the data (how much each observation is correlated with previous observations, or lags), I will plot the ACF and PACF plots.
+
+```{r}
+par(mfrow=c(1,2))
+acf(train, lag.max = 60)
+pacf(train, lag.max = 60)
+```
+The ACF plot indicates that there is a strong positive correlation with previous observations of the same season, and a weaker but still significant negative correlation with observations of the opposite season. All of this does not come as a surprise since we know that natural gas consumption is highly seasonal. We can also see that the correlation is decaying over time, indicating that the series is in fact not stationary and we will need to do some differencing to continue with our ARIMA model.
+```{r}
+USgas_d12 <- diff(train, 12) #specifying the period of differencing, in this case 12 months
+ts_plot(USgas_d12,
+title = "US Monthly Natural Gas consumption - First Seasonal
+Difference",
+Ytitle = "Billion Cubic Feet (First Difference)",
+Xtitle = "Year")
+```
+This yields the following. We have successfully removed the trend in the series, however there still exists non-constant variance which we will need to account for by differencing once more:
+```{r}
+USgas_d12_1 <- diff(diff(USgas_d12, 1))
+ts_plot(USgas_d12_1,
+title = "US Monthly Natural Gas consumption - First Seasonal and
+Non-Seasonal Differencing",
+Ytitle = "Billion Cubic Feet (Difference)",
+Xtitle = "Year")
+```
+This looks better, let's look again at the ACF and PACF plots after the transformation:
+```{r}
+par(mfrow=c(1,2))
+acf(USgas_d12_1, lag.max = 60)
+pacf(USgas_d12_1, lag.max = 60)
+```
+As we can see in the plot, after the transformations the correlation with the lags seem to be tailing off very quickly. Let's try fit an arima model using auto.arima. This automatically determines the best parameters for the AR and MA processes, as well as doing the required differencing for us.
+
+
+```{r}
+USgas_arima_mod <- auto.arima(train)
+USgas_arima_mod
+```
+```{r}
+USgas_test_fc <- forecast(USgas_arima_mod, h = 12)
+accuracy(USgas_test_fc, test)
+```
+
+Not bad, we reduced RMSE from 115 using HoltWinters to just 103. Let's take a look at the plot of the forecast:
+```{r}
+test_forecast(USgas,
+forecast.obj = USgas_test_fc,
+test = test)
+```
+This model also captures the seasonal component very well, while also including the trend. We can see that the peak for the forecasted time points is just a little bit higher than in the previous years, which is what we would expect looking at previous year's changes. This is something the Holt Winters model did not pick up on, which is reflected in the slightly lower RMSE. 
+To check how well the model fits our data, let's perform a residuals check:
+```{r}
+checkresiduals(USgas_arima_mod)
+```
+Everything looks good here, we can see that the residuals resemble white noise and are evenly distributed with a mean of zero. There are no significant autocorrelations in the lags, and the Ljung-Box test also does not reject the null-hypothesis of no auto correlation with a non-significant p-value of 0.13.
+
+## Conclusion
+
+And there we go, we've successfully fitted a few different models, both of which do a good job of capturing the data, but I think it's fair to say that the ARIMA model has come out as the clear winner in this case. Let's take another look at it's predictions for the last 12 months, complete with a confidence interval:
+```{r}
+plot_forecast(USgas_test_fc,
+title = "US Natural Gas Consumption - Forecast",
+Ytitle = "Billion Cubic Feet",
+Xtitle = "Year")
+```
+
+
